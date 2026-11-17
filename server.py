@@ -1,78 +1,169 @@
-"""Servidor de invocação remota usando socket UDP."""
 import argparse
 import socket
+import threading
+from collections import OrderedDict
 
-from protocol import (
-    MAX_DATAGRAM_SIZE,
-    create_reply,
-    decode_message,
-    encode_message,
-)
+from protocol import create_reply, decode_message, encode_message
 
 
-def execute_operation(operation: str, arguments: list):
-    """Executa uma das operações matemáticas disponibilizadas pelo servidor."""
+CACHE_LIMIT = 1000
+
+
+def execute_operation(operation, arguments):
+
     if not isinstance(arguments, list) or len(arguments) != 2:
         raise ValueError("A operação exige exatamente dois argumentos.")
 
     a, b = arguments
-    if not isinstance(a, (int, float)) or isinstance(a, bool):
-        raise ValueError("O primeiro argumento precisa ser numérico.")
-    if not isinstance(b, (int, float)) or isinstance(b, bool):
-        raise ValueError("O segundo argumento precisa ser numérico.")
+
+    if isinstance(a, bool) or isinstance(b, bool):
+        raise ValueError("Os argumentos devem ser numéricos.")
+
+    try:
+        a = float(a)
+        b = float(b)
+    except (TypeError, ValueError):
+        raise ValueError("Os argumentos devem ser numéricos.")
 
     operations = {
-        "somar": lambda x, y: x + y,
-        "subtrair": lambda x, y: x - y,
-        "multiplicar": lambda x, y: x * y,
-        "dividir": lambda x, y: x / y,
+        "somar": lambda: a + b,
+        "subtrair": lambda: a - b,
+        "multiplicar": lambda: a * b,
+        "dividir": lambda: a / b
     }
 
     if operation not in operations:
         raise ValueError(f"Operação desconhecida: {operation}")
+
     if operation == "dividir" and b == 0:
         raise ValueError("Não é possível dividir por zero.")
 
-    return operations[operation](a, b)
+    result = operations[operation]()
+
+    if result.is_integer():
+        return int(result)
+
+    return result
 
 
-def process_request(message: dict) -> dict:
-    """Valida a requisição e produz a resposta correspondente."""
-    request_id = str(message.get("request_id", "sem-id"))
+def process_request(message):
+
+    request_id = (
+        message.get("request_id")
+        if isinstance(message, dict)
+        else None
+    )
+
+    if not isinstance(message, dict) or message.get("type") != "request":
+        return create_reply(
+            request_id,
+            error="Formato de requisição inválido."
+        )
+
     try:
-        if message.get("type") != "request":
-            raise ValueError("Tipo de mensagem inválido.")
-        operation = message.get("operation")
-        arguments = message.get("arguments")
-        if not isinstance(operation, str):
-            raise ValueError("A operação precisa ser informada como texto.")
-        result = execute_operation(operation, arguments)
+        result = execute_operation(
+            message.get("operation"),
+            message.get("arguments")
+        )
+
         return create_reply(request_id, result=result)
-    except (ValueError, TypeError, ZeroDivisionError) as exc:
-        return create_reply(request_id, error=str(exc))
+
+    except (ValueError, TypeError, ZeroDivisionError) as error:
+        return create_reply(request_id, error=str(error))
 
 
-def serve(host: str = "0.0.0.0", port: int = 5000):
-    """Aguarda requisições UDP e devolve uma resposta ao cliente."""
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server_socket:
-        server_socket.bind((host, port))
-        print(f"Servidor UDP ativo em {host}:{port}. Aguardando requisições...")
-        while True:
-            data, client_address = server_socket.recvfrom(MAX_DATAGRAM_SIZE)
+def get_request(sock):
+    data, address = sock.recvfrom(65535)
+    return data, address
+
+
+def send_reply(sock, reply, address):
+    sock.sendto(encode_message(reply), address)
+
+
+def serve(host="0.0.0.0", port=5000, stop_event=None, ready_event=None):
+
+    cache = OrderedDict()
+
+    stop_event = stop_event or threading.Event()
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+
+        sock.bind((host, port))
+        sock.settimeout(0.2)
+
+        actual_port = sock.getsockname()[1]
+
+        threading.current_thread().server_port = actual_port
+
+        print(f"Servidor UDP ativo em {host}:{actual_port}")
+
+        if ready_event:
+            ready_event.set()
+
+        while not stop_event.is_set():
+
             try:
-                request = decode_message(data)
-                print(f"Requisição recebida de {client_address}: {request}")
-                reply = process_request(request)
-            except (UnicodeDecodeError, ValueError) as exc:
-                reply = create_reply("desconhecido", error=f"Mensagem inválida: {exc}")
+                data, address = get_request(sock)
 
-            server_socket.sendto(encode_message(reply), client_address)
-            print(f"Resposta enviada para {client_address}: {reply}")
+            except socket.timeout:
+                continue
+
+            except OSError:
+                continue
+
+            try:
+                message = decode_message(data)
+
+                request_id = (
+                    message.get("request_id")
+                    if isinstance(message, dict)
+                    else None
+                )
+
+                key = (address, request_id)
+
+                # Verifica se a requisição já foi processada.
+                if request_id is not None and key in cache:
+                    reply = cache[key]
+
+                else:
+                    reply = process_request(message)
+
+                    if request_id is not None:
+                        cache[key] = reply
+                        cache.move_to_end(key)
+
+                        # Limita o tamanho do cache.
+                        while len(cache) > CACHE_LIMIT:
+                            cache.popitem(last=False)
+
+            except (ValueError, UnicodeDecodeError):
+                reply = create_reply(
+                    None,
+                    error="Mensagem JSON inválida."
+                )
+
+            try:
+                send_reply(sock, reply, address)
+
+            except OSError:
+                continue
+
+
+def main():
+
+    parser = argparse.ArgumentParser(
+        description="Servidor de invocação remota UDP"
+    )
+
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=5000)
+
+    args = parser.parse_args()
+
+    serve(args.host, args.port)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Servidor de invocação remota via UDP.")
-    parser.add_argument("--host", default="0.0.0.0", help="Endereço para escutar (padrão: 0.0.0.0).")
-    parser.add_argument("--port", type=int, default=5000, help="Porta UDP (padrão: 5000).")
-    args = parser.parse_args()
-    serve(args.host, args.port)
+    main()

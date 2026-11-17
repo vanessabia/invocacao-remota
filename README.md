@@ -27,7 +27,7 @@ O servidor também trata operação desconhecida, argumentos inválidos e divis�
 
 ## 3. Requisitos
 
-- Python 3.10 ou superior.
+- Python 3.9 ou superior.
 - Dois terminais para executar cliente e servidor.
 - Para teste entre computadores, ambos devem estar conectados à mesma rede ou possuir conectividade IP entre si.
 
@@ -43,7 +43,8 @@ invocacao-remota/
 ├── tests/
 │   └── test_protocol.py
 ├── README.md
-└── requirements.txt
+├── requirements.txt
+└── .gitignore
 ```
 
 ## 5. Como executar
@@ -75,15 +76,7 @@ python server.py --port 6000
 
 ### 5.3 Executar o cliente
 
-Abra outro terminal, na pasta do projeto:
-
-```bash
-python client.py
-```
-
-O programa solicitará a operação e os dois números.
-
-Também é possível informar os dados diretamente:
+Abra outro terminal, na pasta do projeto, e execute o comando informando o endereço do servidor, a porta, a operação e os argumentos:
 
 ```bash
 python client.py --host 127.0.0.1 --port 5000 --operation somar --a 10 --b 5
@@ -92,10 +85,13 @@ python client.py --host 127.0.0.1 --port 5000 --operation somar --a 10 --b 5
 Saída esperada:
 
 ```text
-Resultado recebido do servidor: 15.0
+Resultado: 15
 ```
 
-Para testar outras operações, altere `--operation`, `--a` e `--b`.
+Para testar outras operações, altere os parâmetros `--operation`, `--a` e `--b`.
+
+As operações disponíveis são `somar`, `subtrair`, `multiplicar` e `dividir`.
+
 
 ## 6. Testes automatizados
 
@@ -107,12 +103,17 @@ python -m unittest discover -s tests -v
 
 Os testes verificam:
 
-- Codificação e decodificação das mensagens;
-- Criação de respostas;
-- Execução das quatro operações;
+- Codificação e decodificação das mensagens JSON;
+- Execução das quatro operações matemáticas;
+- Validação da quantidade e do tipo dos argumentos;
 - Tratamento de divisão por zero;
 - Tratamento de operações desconhecidas;
-- Processamento de requisições válidas e inválidas.
+- Processamento de requisições e respostas de erro;
+- Comunicação UDP real entre cliente e servidor;
+- Tratamento de erros retornados pelo servidor;
+- Identificação de requisições duplicadas, verificando se a operação não é executada novamente.
+
+Os testes são executados localmente utilizando a biblioteca `unittest` do Python.
 
 ## 7. Teste entre dois computadores
 
@@ -133,7 +134,7 @@ python client.py --host IP_DO_SERVIDOR --port 5000 --operation multiplicar --a 7
 Resultado esperado:
 
 ```text
-Resultado recebido do servidor: 42.0
+Resultado: 42
 ```
 
 O teste deve ser realizado com o servidor em execução. Se não houver resposta, verifique o IP, a porta, a rede e as regras do firewall.
@@ -160,11 +161,13 @@ Exemplo de resposta:
   "type": "reply",
   "request_id": "identificador-unico",
   "result": 15,
-  "error": null
+  "error": null 
 }
 ```
 
-O `request_id` permite associar a resposta à requisição correspondente. O cliente mantém o mesmo identificador quando retransmite uma solicitação.
+O `request_id` permite associar a resposta à requisição correspondente. O cliente mantém o mesmo identificador quando retransmite uma solicitação. 
+
+O servidor também mantém um cache limitado de respostas, associado ao endereço do cliente e ao identificador da requisição. Dessa forma, quando uma mesma solicitação é recebida novamente, o servidor pode reenviar a resposta armazenada sem executar a operação outra vez.
 
 ## 9. Relação com o conteúdo da disciplina
 
@@ -178,6 +181,9 @@ A comunicação é realizada por meio das operações de envio e recebimento de 
 - O cliente realiza retransmissões limitadas quando não recebe resposta dentro do tempo configurado.
 - A implementação é didática e não possui autenticação ou criptografia.
 - O servidor executa somente as operações matemáticas definidas no código.
+- O cache de respostas possui limite de 1000 registros, sendo utilizado para evitar a execução repetida de requisições duplicadas.
+- As retransmissões possuem quantidade limitada de tentativas e utilizam o mesmo identificador da requisição original.
+- A utilização de retransmissões e cache não garante entrega absoluta das mensagens, pois o UDP continua sujeito a perdas e falhas de comunicação.
 
 ## 11. Tecnologias
 
